@@ -21,7 +21,7 @@
 module s1_alu
   import s1_pkg::*;
 #(
-  parameter int unsigned WIDTH = XLEN
+  localparam int unsigned WIDTH = XLEN
 ) (
   input  alu_op_e          op_i,
   input  cmp_op_e          cmp_op_i,
@@ -41,9 +41,11 @@ module s1_alu
   logic [WIDTH-1:0]     sum;
 
   always_comb begin
+    sub = 1'b0;
     unique case (op_i)
       ALU_SUB, ALU_SUBW, ALU_SLT, ALU_SLTU: sub = 1'b1;
-      default:                              sub = 1'b0;
+      default:                              
+        sub = 1'b0;
     endcase
   end
 
@@ -74,6 +76,9 @@ module s1_alu
       CMP_GEU: cmp_result_o = ~lt_unsigned;
       CMP_NONE: cmp_result_o = 1'b0;
     endcase
+    default begin
+      cmp_result_o = 1'b0;   
+    end 
   end
 
   // ---------------------------------------------------------------------------
@@ -98,9 +103,9 @@ module s1_alu
   logic [WIDTH-1:0] sll_res, srl_res, sra_res;
   logic [31:0]      sllw_res, srlw_res, sraw_res;
 
-  assign sll_res  = a_i << shamt;
-  assign srl_res  = a_i >> shamt;
-  assign sra_res  = $unsigned($signed(a_i) >>> shamt);
+  assign sll_res = a_i << shamt;
+  assign srl_res = a_i >> shamt;
+  assign sra_res = $unsigned($signed(a_i) >>> shamt);
   assign sllw_res = a_w << shamt_w;
   assign srlw_res = a_w >> shamt_w;
   assign sraw_res = $unsigned($signed(a_w) >>> shamt_w);
@@ -129,8 +134,21 @@ module s1_alu
       ALU_SRAW:         result_o = {{WIDTH-32{sraw_res[31]}}, sraw_res};
       ALU_PASS_B:       result_o = b_i;
     endcase
+    default begin
+      result_o = sum;
+    end
   end
 
+always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni)      count_q <= '0;
+  if (clr_i)   count_q <= '0;
+  if (en_i)    count_q <= count_q + 1;
+  else               count_q <= count_q;
+end
 endmodule
+
+
+
+
 
 

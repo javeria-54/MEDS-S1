@@ -125,7 +125,7 @@ Longer means it should be split. Waivers go in `scripts/check_structure.py` with
 Widths and depths come from parameters or `$clog2`. `64'h1000` in the middle of a datapath is a
 review blocker; a named parameter in `s1_pkg.sv` is not.
 
-### R-C8 — shared types live in the package
+### R-C8 — shared types live in the package and parameters
 
 If two modules must agree on a struct's shape, it goes in `s1_pkg.sv`. A struct declared in a module
 file that another module also needs is how field-order bugs happen.
@@ -173,7 +173,7 @@ Anything derived from another parameter (a width computed via `$clog2`, an inter
 
 When the RHS is narrower than the LHS, extend it explicitly using zero/sign extension or an explicit `unsigned'() / signed'()` cast. Do not rely on implicit extension. Verilator treats `WIDTHEXPAND` as an error.
 
-### R-C17 — a simple mux is an expression, not a module
+### R-C16 — a simple mux is an expression, not a module
 
 A 2:1 or narrow N:1 select belongs inline as a ternary or a `case` inside `always_comb` /
 `assign`, not wrapped in its own `s1_mux_*` module. A standalone mux module earns its keep only
@@ -184,17 +184,17 @@ select policy — default is inline.
 assign result_o = sel_i ? operand_b_i : operand_a_i;
 ```
 
-### R-C18 — no `#delay` in synthesizable RTL **[auto]**
+### R-C17 — no `#delay` in synthesizable RTL **[auto]**
 
 `#` delays have no synthesis meaning and only exist in simulation; if it compiles differently
 than it simulates, it does not belong in `rtl/`. Confined to `verif/` testbenches only.
 
-### R-C19 — flip-flops over latches
+### R-C18 — flip-flops over latches
 
 `always_latch` is permitted (R-C1 names it) but discouraged by default prefer restructuring
 into `always_ff`. A latch that survives review needs a comment saying why a flip-flop doesn't work.
 
-### R-C20 — no two non-blocking assignments to the same bit **[auto]**
+### R-C19 — no two non-blocking assignments to the same bit **[auto]**
 
 Two `<=` writes to the same signal (or overlapping bits of it) in the same clocked block is almost
 always a copy-paste bug or a forgotten `else`; the second write silently wins and the first is dead
@@ -209,7 +209,7 @@ always_ff @(posedge clk_i or negedge rst_ni) begin
 end
 ```
 
-### R-C21 — no multi-bit signal in boolean context **[auto via lint]**
+### R-C20 — no multi-bit signal in boolean context **[auto via lint]**
 
 Putting a multi-bit signal directly into an `if`/boolean condition implicitly means "any bit is
 set" — but that intent isn't clearly visible at the call site, so always write the comparison
@@ -221,9 +221,10 @@ if (my_multibit_signal != '0) begin
 end
 ```
 
-### R-C23 — no cyclic package dependencies **[auto]**
+### R-C21 — no cyclic package dependencies **[auto via lint]**
+A signal must not combinationally depend on itself, directly or through a chain of assign/always_comb logic, with no register in the cycle. Verilator's UNOPTFLAT warning is promoted from warning to error in verif/verilator.vlt.
 
-### R-C24 — ANSI (Verilog-2001) port declarations only **[auto]**
+### R-C22 — ANSI (Verilog-2001) port declarations only **[auto]**
 
 Full combined port-and-type declaration in the module header; no Verilog-95 list style, no
 separate `input`/`output` re-declarations in the body. Opening `(` on the module-declaration line;
@@ -243,7 +244,7 @@ module s1_counter #(
 );
 ```
 
-### R-C25 — every generate block is named **[auto]**
+### R-C23 — every generate block is named **[auto]**
 
 Every branch of a generate-`if` and every generate-`for` body gets an explicit `begin : label`.
 Without it, different tools produce different hierarchical names for the generated instances, and
@@ -265,29 +266,29 @@ end
 No extra `begin`/`end` wrapping a generate construct, and no `generate`/`endgenerate` region —
 both are redundant now that every block is individually named.
 
-### R-C26 — use signed arithmetic constructs, not manual sign handling
+### R-C24 — use signed arithmetic constructs, not manual sign handling
 
 Wherever signed arithmetic is genuinely needed, declare the signal `signed` and use SystemVerilog's
 signed operators don't hand-roll two's-complement logic.  
 
-### R-C28 — no hierarchical references in synthesizable RTL **[auto]**
+### R-C25 — no hierarchical references in synthesizable RTL **[auto]**
 
 Tool support for hierarchical references is inconsistent — some synthesisers accept them, some
 error, some silently ignore them, and any of those is a simulation/synthesis mismatch waiting to
 happen. The one exception: a hierarchical reference inside an SVA that is macro-guarded out of the
 synthesis view.
 
-### R-C29 — array endianness
+### R-C26 — array endianness
 
 Packed arrays are (`logic [N-1:0] foo`, bit 0 on the right). Unpacked arrays are (`byte_t arr[0:N-1]`, index 0 first). 
 
-### R-C30 — prefer registered module outputs
+### R-C27 — prefer registered module outputs
 
 Where a choice exists, register a module's outputs rather than exposing purely combinational
 paths at the boundary — keeps timing closure local to the module instead of leaking a long combinational
 path into whatever instantiates it. 
 
-## R-C31. Finite state machines — R-M
+## R-C28. Finite state machines — R-M
 
 Every FSM is exactly three blocks never two, never one. Mixing next-state and output logic into
 a single combinational block is the most common FSM review comment there is; naming the three
@@ -323,9 +324,9 @@ end else begin
 end
 ```
 
-### R-F3 — line length: 100 columns **[auto]**
+### R-F3 — line length: 150 columns **[auto]**
 
-Beyond 100 columns, break the line and indent the continuation. Applies inside
+Beyond 150 columns, break the line and indent the continuation. Applies inside
 `always_comb`/`always_ff`/`always_latch` blocks same as anywhere else.
 
 ### R-F4 — right-align line continuations **[auto via lint]**
