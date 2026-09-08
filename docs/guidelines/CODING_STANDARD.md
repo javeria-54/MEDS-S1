@@ -299,8 +299,7 @@ has to reconstruct by reading.
 |---|---|---|
 | **R-M1** | State register is a `typedef`'d enum, never raw `logic [N-1:0]`. Encoding (binary/one-hot/gray) is the designer's call per-FSM, but the RTL never compares it as a bare integer — always via the enum name. | **[auto]** |
 | **R-M2** | Every FSM is exactly three blocks: one `always_ff` for the state register (`state_q <= state_d`), one `always_comb` for next-state logic (computes `state_d` from `state_q` and inputs), one `always_comb` for output logic (computes outputs from `state_q`, and inputs for a Mealy output). No block does more than its one job — the sequential block never computes outputs, the next-state block never drives an output, the output block never assigns `state_d`. | **[auto: block-count + assignment-target check]** |
-| **R-M3** | Block naming convention: `<fsm>_state_reg`, `<fsm>_next_state_comb`, `<fsm>_output_comb` (as block labels, R-F6 spacing) makes the three-way split visible in a waveform viewer and in `grep`, not just in the source. | |
-| **R-M4** | Next-state logic uses `unique case (state_q)`  with a `default` that returns to a safe/reset state never `state_q` unchanged, never `'x`. | **[auto]** |
+| **R-M3** | Next-state logic uses `unique case (state_q)`  with a `default` that returns to a safe/reset state never `state_q` unchanged, never `'x`. | **[auto]** |
 
 ---
 
@@ -324,9 +323,9 @@ end else begin
 end
 ```
 
-### R-F3 — line length: 150 columns **[auto]**
+### R-F3 — line length: 120 columns **[auto]**
 
-Beyond 150 columns, break the line and indent the continuation. Applies inside
+Beyond 120 columns, break the line and indent the continuation. Applies inside
 `always_comb`/`always_ff`/`always_latch` blocks same as anywhere else.
 
 ### R-F4 — right-align line continuations **[auto via lint]**

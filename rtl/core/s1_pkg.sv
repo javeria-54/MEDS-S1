@@ -17,14 +17,14 @@ package s1_pkg;
   // ---------------------------------------------------------------------------
   // Global parameters
   // ---------------------------------------------------------------------------
-  parameter int unsigned XLEN = 64;
-  parameter int unsigned ILEN = 32;
-  parameter int unsigned PLEN = 40;   // physical address width
+  parameter int unsigned XLEN       = 64;
+  parameter int unsigned ILEN       = 32;
+  parameter int unsigned PLEN       = 40;   // physical address width
   parameter int unsigned REG_ADDR_W = 5;
 
-  parameter int unsigned CB_DEPTH = 8;    // completion buffer entries (SPEC 9.3)
-  localparam int unsigned CB_IDX_W = $clog2(CB_DEPTH);
-  parameter int unsigned MXIF_ID_W = 4;    // INTERFACES.md 1.3
+  parameter int unsigned CB_DEPTH   = 8;    // completion buffer entries (SPEC 9.3)
+  parameter int unsigned CB_IDX_W   = $clog2(CB_DEPTH);
+  parameter int unsigned MXIF_ID_W  = 4;    // INTERFACES.md 1.3
 
   parameter int unsigned PMP_N = 16;
 
