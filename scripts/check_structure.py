@@ -124,16 +124,25 @@ class Checker:
 
     # -------------------------------------------------------------------------------------------- S6
     def check_dq_naming(self) -> None:
-        bad_re = re.compile(r"\b(\w+?)_(next|reg)\b")
+        decl_re = re.compile(r"\b(?:logic|reg|wire|input|output|inout)\b[^;]*?;", re.S)
+        name_re = re.compile(r"\b(\w+?)_(next|reg)\b")
+        label_re = re.compile(r"\bbegin\s*:\s*\w+")
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
-            text = f.read_text(errors="replace")
-            text = self._strip_comments(text)
-            for m in bad_re.finditer(text):
-                self.bad("S6", f,
-                    f"'{m.group(0)}' uses banned suffix '_{m.group(2)}' — "
-                    f"use _d (comb next-state) / _q (registered) instead (R-N6)")
+            text = self._strip_comments(f.read_text(errors="replace"))
+            # 'begin : label' ko blank kar do taake label name signal na samjha jaye
+            text = label_re.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+            reported: set[str] = set()
+            for decl in decl_re.findall(text):
+                for m in name_re.finditer(decl):
+                    full = m.group(0)
+                    if full in reported:
+                        continue
+                    reported.add(full)
+                    self.bad("S6", f,
+                        f"'{full}' uses banned suffix '_{m.group(2)}' — "
+                        f"use _d (comb next-state) / _q (registered) instead (R-N6)")
 
     # -------------------------------------------------------------------------------------------- S7
     def check_param_naming(self) -> None:
@@ -485,7 +494,11 @@ class Checker:
         param_line_re = re.compile(r"\b(?:parameter|localparam)\b")
         allowed = {"0", "1"}                      # trivial constants, not "magic"
         for f in sorted(ROOT.rglob("*.sv")):
+            if self._skip(f) or "verif" in f.parts:
+                continue
             if self._skip(f) or f.name == "s1_pkg.sv":
+                continue                          # shared constants live here by design
+            if self._skip(f) or f.name == "s1_ci_test.sv":
                 continue                          # shared constants live here by design
             text = self._strip_comments(f.read_text(errors="replace"))
             for i, line in enumerate(text.splitlines(), 1):
@@ -501,28 +514,34 @@ class Checker:
 
     # ------------------------------------------------------------------------------------------ S18
     def check_shared_types_in_pkg(self) -> None:
-        # Step 1: har file mein struct/union typedefs dhoondo (name -> file)
+        # Ab struct/union + enum + plain/scalar typedefs — teeno cover hote hain
         type_decl_re = re.compile(
-            r"typedef\s+(?:struct|union)\s+(?:packed\s+)?\b.*?\{.*?\}\s*(\w+)\s*;", re.S
+            r"typedef\s+" 
+            r"(?:"
+            r"(?:struct|union)\s+(?:packed\s+)?\{.*?\}\s*(\w+)\s*;"       # struct/union
+            r"|"
+            r"enum\s+[^{;]*\{.*?\}\s*(\w+)\s*;"                          # enum
+            r"|"
+            r"[A-Za-z_][\w:]*(?:\s*\[[^\]]*\])*\s+(\w+)\s*;"              # plain/scalar
+            r")",
+            re.S
         )
-        declared_in: dict[str, Path] = {}
-        file_texts: dict[Path, str] = {}
+        declared_in: dict[str, pathlib.Path] = {}
+        file_texts: dict[pathlib.Path, str] = {}
 
         files = [f for f in sorted(ROOT.rglob("*.sv")) if not self._skip(f)]
 
         for f in files:
             text = self._strip_comments(f.read_text(errors="replace"))
             file_texts[f] = text
-            for type_name in type_decl_re.findall(text):
-                # agar same naam do jagah declared hai to pehli location record rehti hai
-                # (duplicate-declaration apna alag issue hai, yahan scope nahi)
-                declared_in.setdefault(type_name, f)
+            for groups in type_decl_re.findall(text):
+                type_name = next((g for g in groups if g), None)
+                if type_name:
+                    declared_in.setdefault(type_name, f)
 
-        # Step 2: har declared type ke liye check karo ke kya kisi *dusri* file
-        # mein bhi uska naam use ho raha hai (as a usage, not just re-declaration)
         for type_name, decl_file in declared_in.items():
             if decl_file.name == "s1_pkg.sv":
-                continue  # already sahi jagah hai
+                continue
 
             usage_re = re.compile(r"\b" + re.escape(type_name) + r"\b")
             used_elsewhere = []
@@ -535,33 +554,36 @@ class Checker:
             if used_elsewhere:
                 other_files = ", ".join(str(x) for x in used_elsewhere)
                 self.bad("S18", decl_file,
-                    f"struct type '{type_name}' is used in other module(s) "
+                    f"type '{type_name}' is used in other module(s) "
                     f"({other_files}) but declared outside s1_pkg.sv -- shared "
                     f"types must live in s1_pkg.sv (R-C8)")
 
     # ------------------------------------------------------------------------------------------ S19
     def check_valid_ready(self) -> None:
         assign_re = re.compile(r"assign\s+(\w*valid\w*)\s*=\s*([^;]+);")
-        comb_re = re.compile(r"always_comb\s*begin(.*?)\bend\b", re.S)
         comb_assign_re = re.compile(r"(\w*valid\w*)\s*=\s*([^;]+);")
-        ready_re = re.compile(r"\bready\w*\b", re.I)
+        ready_re = re.compile(r"(?<![A-Za-z0-9])ready(?![A-Za-z0-9])", re.I)
+
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
+
             for name, rhs in assign_re.findall(text):
                 if ready_re.search(rhs):
                     self.bad("S19", f, f"'{name}' driven by assign whose RHS "
                                         f"references a 'ready' signal -- valid must not "
                                         f"depend combinationally on ready (R-C10)")
-            for body in comb_re.findall(text):
+
+            # nested begin/end-safe extraction (comb_re ki jagah)
+            for _header, body in self._extract_blocks(text, "always_comb"):
                 for name, rhs in comb_assign_re.findall(body):
                     if ready_re.search(rhs):
                         self.bad("S19", f, f"'{name}' assigned inside always_comb from "
                                             f"an expression referencing 'ready' -- "
                                             f"valid must not depend combinationally on "
                                             f"ready (R-C10)")
-        
+            
     # ------------------------------------------------------------------------------------------ S20
     def check_wildcard_port_connect(self) -> None:
         wildcard_re = re.compile(r"\.\*")
@@ -623,24 +645,85 @@ class Checker:
                                         f"RTL -- confine to verif/ (R-C17)")
 
     # ------------------------------------------------------------------------------------------ S24
+    @staticmethod
+    def _extract_branch(text: str, start: int):
+        i, n = start, len(text)
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        if text[i:i + 5] == "begin":
+            depth, i = 1, i + 5
+            tok_re = re.compile(r"\b(begin|end)\b")
+            while i < n:
+                tm = tok_re.search(text, i)
+                if not tm:
+                    break
+                depth += 1 if tm.group(1) == "begin" else -1
+                if depth == 0:
+                    return text[start:tm.start()], tm.end()
+                i = tm.end()
+            return text[start:], n
+        semi = text.find(";", i)
+        if semi == -1:
+            return text[start:], n
+        return text[start:semi + 1], semi + 1
+
+    def _count_assigns_on_path(self, text: str) -> dict:
+        """Ek hi execution path par har signal ke max possible <= writes gin ta hai.
+        Sibling if/else branches ke counts ADD nahi hote, sirf max liya jata hai —
+        isi se mutually-exclusive if/else false-positive nahi banta."""
+        assign_re = re.compile(r"\b(\w+)(\[[^\]]*\])?\s*<=")
+        if_re = re.compile(r"\bif\s*\(")
+        counts: dict[str, int] = {}
+        pos, n = 0, len(text)
+        while pos < n:
+            m_if = if_re.search(text, pos)
+            m_asn = assign_re.search(text, pos)
+            if m_asn and (not m_if or m_asn.start() < m_if.start()):
+                name, brack = m_asn.group(1), m_asn.group(2)
+                if not brack:
+                    counts[name] = counts.get(name, 0) + 1
+                pos = m_asn.end()
+                continue
+            if m_if:
+                cond_open = m_if.end() - 1
+                _cond, after_cond = self._match_paren(text, cond_open)
+                if after_cond is None:
+                    break
+                branch_body, pos = self._extract_branch(text, after_cond)
+                branch_counts = [self._count_assigns_on_path(branch_body)]
+                while True:
+                    m_else = re.match(r"\s*else\b", text[pos:])
+                    if not m_else:
+                        break
+                    after_else = pos + m_else.end()
+                    m_elseif = re.match(r"\s*if\s*\(", text[after_else:])
+                    if m_elseif:
+                        cond_open2 = after_else + m_elseif.end() - 1
+                        _c2, after_cond2 = self._match_paren(text, cond_open2)
+                        body2, pos = self._extract_branch(text, after_cond2)
+                        branch_counts.append(self._count_assigns_on_path(body2))
+                    else:
+                        body2, pos = self._extract_branch(text, after_else)
+                        branch_counts.append(self._count_assigns_on_path(body2))
+                        break
+                names = {nm for bc in branch_counts for nm in bc}
+                for name in names:
+                    counts[name] = counts.get(name, 0) + max(bc.get(name, 0) for bc in branch_counts)
+                continue
+            break
+        return counts
+        
     def check_duplicate_nonblocking(self) -> None:
         block_re = re.compile(r"always_ff\s*@[^;]*?begin(.*?)\bend\b", re.S)
-        assign_re = re.compile(r"\b(\w+)(\[[^\]]*\])?\s*<=")
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
             for body in block_re.findall(text):
-                seen: dict[str, int] = {}
-                for name, brack in assign_re.findall(body):
-                    if brack:
-                        continue  # bit-sliced target -- overlap needs a real
-                                # tool to prove, skip to avoid false positives
-                    seen[name] = seen.get(name, 0) + 1
-                for name, n in seen.items():
+                for name, n in self._count_assigns_on_path(body).items():
                     if n > 1:
-                        self.bad("S24", f, f"'{name}' has {n} whole-signal <= "
-                                            f"writes in one always_ff -- later "
+                        self.bad("S24", f, f"'{name}' can receive {n} whole-signal <= "
+                                            f"writes on a single execution path -- later "
                                             f"write silently wins (R-C19)")
 
     # ------------------------------------------------------------------------------------------ S25
@@ -703,8 +786,6 @@ class Checker:
     # ------------------------------------------------------------------------------------------ S26
     def check_ansi_ports_order(self) -> None:
         non_ansi_re = re.compile(r"^\s*module\s+\w+\s*\(\s*[A-Za-z_]\w*\s*,")
-        port_re = re.compile(
-            r"^\s*(?:input|output|inout)\b[^;]*?([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*[,)]\s*$", re.M)
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
@@ -712,13 +793,14 @@ class Checker:
             if non_ansi_re.search(text):
                 self.bad("S26", f, "port list looks Verilog-95 style -- use "
                                     "full ANSI declarations (R-C22)")
-            ports = port_re.findall(text)
-            clk_idx = next((i for i, p in enumerate(ports) if p == "clk_i"), None)
-            rst_idx = next((i for i, p in enumerate(ports) if p == "rst_ni"), None)
-            if clk_idx not in (None, 0):
-                self.bad("S26", f, "clk_i must be the first port (R-C22)")
-            if clk_idx is not None and rst_idx is not None and rst_idx != clk_idx + 1:
-                self.bad("S26", f, "rst_ni must immediately follow clk_i (R-C22)")
+            for mod_name, ports, _header in self._iter_module_ports(text):
+                clk_idx = next((i for i, p in enumerate(ports) if p == "clk_i"), None)
+                rst_idx = next((i for i, p in enumerate(ports) if p == "rst_ni"), None)
+                if clk_idx not in (None, 0):
+                    self.bad("S26", f, f"module '{mod_name}': clk_i must be the first port (R-C22)")
+                if clk_idx is not None and rst_idx is not None and rst_idx != clk_idx + 1:
+                    self.bad("S26", f, f"module '{mod_name}': rst_ni must immediately "
+                                        f"follow clk_i (R-C22)")
 
     # ------------------------------------------------------------------------------------------ S27
     def check_generate_labels(self) -> None:
@@ -732,15 +814,19 @@ class Checker:
 
     # ------------------------------------------------------------------------------------------ S28
     def check_manual_sign_handling(self) -> None:
-        negate_re = re.compile(r"~\s*[A-Za-z_]\w*(?:\[[^\]]*\])?\s*\+\s*1(?:'[bB]1)?\b")
-        negate_alt_re = re.compile(r"-\s*~\s*[A-Za-z_]\w*\b")   # -~x === x+1
+        operand = r"[A-Za-z_]\w*(?:\[[^\]]*\])?"
+        one_lit = r"1(?:'[bB]1)?"
+
+        negate_re = re.compile(rf"~\s*{operand}\s*\+\s*{one_lit}\b")        # ~x + 1
+        negate_rev_re = re.compile(rf"\b{one_lit}\s*\+\s*~\s*{operand}")     # 1 + ~x
+        negate_alt_re = re.compile(rf"-\s*~\s*{operand}\b")                  # -~x === x+1
 
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
             for i, line in enumerate(text.splitlines(), 1):
-                if negate_re.search(line) or negate_alt_re.search(line):
+                if negate_re.search(line) or negate_rev_re.search(line) or negate_alt_re.search(line):
                     self.bad("S28", f, f"line {i}: manual two's-complement "
                                         f"negation -- declare the signal "
                                         f"`signed` and use unary '-' instead (R-C24)")
@@ -831,14 +917,16 @@ class Checker:
     def check_array_endianness(self) -> None:
         decl_re = re.compile(
             r"\b(?:logic|reg|wire|bit|byte|int|integer|shortint|longint|"
-            r"[A-Za-z_]\w*_t)\b\s*(?:signed|unsigned)?\s*(\[[^\]]*\])?\s*"
-            r"([A-Za-z_]\w*)\s*(\[[^\]]*\])?\s*[;,=)]"
+            r"[A-Za-z_]\w*_t)\b\s*(?:signed|unsigned)?\s*"
+            r"((?:\[[^\]]*\]\s*)*)"        # packed dims: zero or more
+            r"([A-Za-z_]\w*)\s*"           # variable name
+            r"((?:\[[^\]]*\]\s*)*)"        # unpacked dims: zero or more
+            r"[;,=)]"
         )
         int_re = re.compile(r"^\d+$")
+        dim_re = re.compile(r"\[[^\]]*\]")
 
         def classify(dim):
-            if dim is None:
-                return None
             inner = dim[1:-1].strip()
             if ":" not in inner:
                 return None                    # size-only [16], not a range
@@ -857,49 +945,80 @@ class Checker:
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
             for m in decl_re.finditer(text):
-                packed, name, unpacked = m.group(1), m.group(2), m.group(3)
+                packed_blob, name, unpacked_blob = m.group(1), m.group(2), m.group(3)
                 line_no = text.count("\n", 0, m.start()) + 1
 
-                if classify(packed) == "asc":
-                    self.bad("S30", f, f"line {line_no}: packed dim {packed} "
-                                        f"on '{name}' is ascending -- packed "
-                                        f"arrays must be [N-1:0] (R-C26)")
-                if classify(unpacked) == "desc":
-                    self.bad("S30", f, f"line {line_no}: unpacked dim "
-                                        f"{unpacked} on '{name}' is descending "
-                                        f"-- unpacked arrays must be [0:N-1] (R-C26)")
+                for dim in dim_re.findall(packed_blob):
+                    if classify(dim) == "asc":
+                        self.bad("S30", f, f"line {line_no}: packed dim {dim} "
+                                            f"on '{name}' is ascending -- packed "
+                                            f"arrays must be [N-1:0] (R-C26)")
+
+                for dim in dim_re.findall(unpacked_blob):
+                    if classify(dim) == "desc":
+                        self.bad("S30", f, f"line {line_no}: unpacked dim {dim} "
+                                            f"on '{name}' is descending -- unpacked "
+                                            f"arrays must be [0:N-1] (R-C26)")
 
     # ------------------------------------------------------------------------------------------ S31
     def check_latch_justification(self) -> None:
+        comment_re = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
             raw = f.read_text(errors="replace")
             for m in re.finditer(r"always_latch\b", raw):
-                line_start = raw.rfind("\n", 0, m.start())
-                prev_start = raw.rfind("\n", 0, line_start)
-                prev_line = raw[prev_start + 1: line_start] if line_start != -1 else ""
-                if "//" not in prev_line:
+                line_start = raw.rfind("\n", 0, m.start()) + 1
+
+                # 1) same line trailing comment (before or after always_latch on this line)?
+                line_end = raw.find("\n", m.start())
+                if line_end == -1:
+                    line_end = len(raw)
+                same_line = raw[line_start:line_end]
+                if comment_re.search(same_line):
+                    continue
+
+                # 2) look back up to 3 non-blank lines for a comment
+                justified = False
+                pos = line_start
+                for _ in range(3):
+                    prev_end = pos - 1
+                    if prev_end < 0:
+                        break
+                    prev_start = raw.rfind("\n", 0, prev_end) + 1
+                    prev_line = raw[prev_start:prev_end]
+                    pos = prev_start
+                    if not prev_line.strip():
+                        continue          # blank line -- keep looking back
+                    if comment_re.search(prev_line):
+                        justified = True
+                    break                  # first non-blank line decides it
+
+                if not justified:
                     self.bad("S31", f, "always_latch with no justification "
                                         "comment above it (R-C18)")
 
     # ------------------------------------------------------------------------------------------ S32
     def check_fsm_state_type(self) -> None:
         raw_decl_re = re.compile(
-            r"^\s*logic\s*(?:\[[^\]]*\]\s*)+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*;",
+            r"^\s*logic\s*(?:\[[^\]]*\]\s*)*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*;",
             re.M | re.I)
         state_q_name_re = re.compile(r"\w*state\w*_q$", re.I)
-        bare_cmp_re = re.compile(r"(\w*state\w*_q)\s*==\s*\d", re.I)
+        bare_cmp_re = re.compile(
+            r"(\w*state\w*_q)\s*(?:==|!=)\s*\d"
+            r"|"
+            r"\d\s*(?:==|!=)\s*(\w*state\w*_q)",
+            re.I)
         case_re = re.compile(
             r"(?:unique\s+)?case\s*\(\s*(\w*state\w*_q)\s*\)(.*?)endcase", re.S | re.I)
-        label_re = re.compile(r"^\s*([A-Za-z_]\w*)\s*:", re.M)
+        label_re = re.compile(r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:", re.M)
 
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
 
-            # -- raw logic-vector state register --
+            # -- raw logic-vector (ya single-bit) state register --
             for names in raw_decl_re.findall(text):
                 for name in re.split(r"\s*,\s*", names):
                     name = name.strip()
@@ -908,15 +1027,21 @@ class Checker:
                                             f"vector — state register must be "
                                             f"a typedef'd enum (R-M1)")
 
-            # -- bare numeric literal comparison --
-            for name in bare_cmp_re.findall(text):
+            # -- bare numeric literal comparison (==, !=, dono operand orders) --
+            for m in bare_cmp_re.finditer(text):
+                name = m.group(1) or m.group(2)
                 self.bad("S32", f, f"'{name}' compared against a bare numeric "
                                     f"literal — compare via the enum name, not "
                                     f"an integer (R-M1)")
 
             # -- state VALUES defined via localparam instead of enum members --
             for state_sig, body in case_re.findall(text):
-                labels = {m for m in label_re.findall(body) if m.lower() != "default"}
+                labels: set[str] = set()
+                for group in label_re.findall(body):
+                    for name in re.split(r"\s*,\s*", group):
+                        name = name.strip()
+                        if name and name.lower() != "default":
+                            labels.add(name)
                 for label in sorted(labels):
                     lp_re = re.compile(
                         rf"\blocalparam\b[^;]*\b{re.escape(label)}\b\s*=", re.I)
@@ -925,7 +1050,7 @@ class Checker:
                                             f"case({state_sig})) is declared "
                                             f"via localparam, not as a member "
                                             f"of a typedef'd enum (R-M1)")
-    
+        
     # ------------------------------------------------------------------------------------------ S33
     def check_fsm_three_blocks(self) -> None:
         state_reg_re = re.compile(r"(\w*state\w*)_q\s*<=")
@@ -1037,15 +1162,120 @@ class Checker:
 
     # ---------------------Formating R-F-----------------------------------------------------------
     # ------------------------------------------------------------------------------------------ S35
-    def check_indentation(self) -> None:
-        for f in list(ROOT.rglob("*.sv")) + list(ROOT.rglob("*.py")):
+    def _mask_strings(self, text: str) -> str:
+            result = list(text)
+            i = 0
+            n = len(text)
+
+            while i < n:
+                if text[i] != '"':
+                    i += 1
+                    continue
+
+                i += 1
+
+                while i < n:
+                    if text[i] == "\\":
+                        # Preserve escaped character position.
+                        if i + 1 < n:
+                            if text[i] != "\n":
+                                result[i] = " "
+                            i += 1
+
+                            if text[i] != "\n":
+                                result[i] = " "
+                            i += 1
+                        else:
+                            i += 1
+                        continue
+
+                    if text[i] == '"':
+                        i += 1
+                        break
+
+                    if text[i] != "\n":
+                        result[i] = " "
+
+                    i += 1
+
+            return "".join(result)
+    def check_operator_spacing(self) -> None:
+        assign_re = re.compile(r"(?<![=!<>+\-*/&|^~%])=(?!=)")
+        decl_re = re.compile(r"^(parameter|localparam|typedef|import|export)\b", re.I)
+
+        def line_signature(line: str):
+            """(kind, column) for a single-assignment candidate line, else None."""
+            stripped = line.strip()
+            if not stripped:
+                return None
+            matches = list(assign_re.finditer(line))
+            if len(matches) != 1:
+                return None
+            kind = "decl" if decl_re.match(stripped) else "plain"
+            return (kind, matches[0].start())
+
+        for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
-            text = f.read_text(errors="replace")
-            for i, line in enumerate(text.splitlines(), 1):
-                if "\t" in line:
-                    self.bad("S35", f, f"line {i}: tab character found — "
-                                        f"2 spaces only, no tabs (R-F1)")
+
+            text = self._strip_comments(f.read_text(errors="replace"))
+            text = self._mask_strings(text)
+            lines = text.splitlines()
+
+            sigs = [line_signature(l) for l in lines]
+
+            for i, line in enumerate(lines):
+                for match in assign_re.finditer(line):
+                    eq_pos = match.start()
+
+                    left_spaces = 0
+                    j = eq_pos - 1
+                    while j >= 0 and line[j] == " ":
+                        left_spaces += 1
+                        j -= 1
+
+                    right_spaces = 0
+                    j = eq_pos + 1
+                    while j < len(line) and line[j] == " ":
+                        right_spaces += 1
+                        j += 1
+
+                    if right_spaces != 1:
+                        self.bad(
+                            "S40", f,
+                            f"line {i + 1}: invalid spacing after '=' -- "
+                            f"use exactly one space (R-F1)"
+                        )
+                        continue
+
+                    if left_spaces == 1:
+                        continue
+
+                    aligned = False
+                    if left_spaces > 1 and sigs[i] is not None and sigs[i][1] == eq_pos:
+                        kind, col = sigs[i]
+                        group = 0
+
+                        j = i - 1
+                        while j >= 0 and sigs[j] == (kind, col):
+                            group += 1
+                            j -= 1
+
+                        j = i + 1
+                        while j < len(lines) and sigs[j] == (kind, col):
+                            group += 1
+                            j += 1
+
+                        aligned = group >= 1
+
+                    if aligned:
+                        continue
+
+                    self.bad(
+                        "S40", f,
+                        f"line {i + 1}: extra space before '=' is not "
+                        f"part of an alignment (R-F1)"
+                    )
     
     # ------------------------------------------------------------------------------------------ S36
     def check_begin_end(self) -> None:
@@ -1075,55 +1305,36 @@ class Checker:
 
     # ------------------------------------------------------------------------------------------ S38
     def check_call_parenthesis_spacing(self) -> None:
-        call_re = re.compile(
-            r"\b([A-Za-z_][A-Za-z0-9_$]*)\s+\("
-        )
-        macro_re = re.compile(
-            r"`[A-Za-z_][A-Za-z0-9_$]*\s+\("
-        )
+        call_re = re.compile(r"\b([A-Za-z_][A-Za-z0-9_$]*)\s+\(")
+        macro_re = re.compile(r"`[A-Za-z_][A-Za-z0-9_$]*\s+\(")
+        # module header ('module name (') aur instantiation ('type_name inst_name (')
+        # dono "identifier <space> identifier (" pattern se match ho jaate hain
+        decl_or_inst_re = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_$]*\s+[A-Za-z_][A-Za-z0-9_$]*\s*\(")
         keywords = {
             "if", "else", "for", "foreach", "while", "do", "case", "casex",
             "casez", "randcase", "with", "inside", "assert", "assume", "cover",
-            "expect", "wait", "repeat", "forever", "disable", "return",
+            "expect", "wait", "repeat", "forever", "disable", "return", "module",
         }
 
-        for f in sorted(
-            list(ROOT.rglob("*.sv")) +
-            list(ROOT.rglob("*.svh")) #+
-            #list(ROOT.rglob("*.py"))
-        ):
+        for f in sorted(list(ROOT.rglob("*.sv")) + list(ROOT.rglob("*.svh"))):
             if self._skip(f):
                 continue
-            text = self._strip_comments(
-                f.read_text(errors="replace")
-            )
+            text = self._strip_comments(f.read_text(errors="replace"))
             for i, line in enumerate(text.splitlines(), 1):
-                if re.search(
-                    r"\.\s*[A-Za-z_][A-Za-z0-9_$]*\s+\(",
-                    line
-                ):
+                if re.search(r"\.\s*[A-Za-z_][A-Za-z0-9_$]*\s+\(", line):
                     continue
-                if re.search(
-                    r"\b[A-Za-z_][A-Za-z0-9_$]*\s+#\s*\(",
-                    line
-                ):
+                if re.search(r"\b[A-Za-z_][A-Za-z0-9_$]*\s+#\s*\(", line):
+                    continue
+                if decl_or_inst_re.match(line):     # <-- naya skip
                     continue
                 for m in call_re.finditer(line):
                     name = m.group(1)
-
                     if name.lower() in keywords:
                         continue
-                    self.bad(
-                        "S38", f, f"line {i}: space before '(' in call "
-                        f"'{name}' — remove the space (R-F7)"
-                    )
+                    self.bad("S38", f, f"line {i}: space before '(' in call "
+                                        f"'{name}' — remove the space (R-F7)")
                 if macro_re.search(line):
-                    self.bad(
-                        "S38",
-                        f,
-                        f"line {i}: space before '(' in macro call "
-                        f"(R-F7)"
-                    )
+                    self.bad("S38", f, f"line {i}: space before '(' in macro call (R-F7)")
 
     # ------------------------------------------------------------------------------------------ S39
     def check_default_nettype(self) -> None:
@@ -1134,83 +1345,21 @@ class Checker:
             if "`default_nettype none" not in text:
                 self.bad("S39", f, "missing `default_nettype none` — without it, "
                                     "the compiler won't catch implicit nets (R-F11)")   
- 
-    # ------------------------------------------------------------------------------------------ S40
-    def check_operator_spacing(self) -> None:
-        
-        bad_re = re.compile(
-            r"(?<![=!<>+\-*/&|^~%])\s{2,}=(?!=)"
-            r"|"
-            r"(?<![=!<>+\-*/&|^~%])=\s{2,}(?![=])"
-        )
-
-        # Plain assignment '=' position
-        assign_re = re.compile(
-            r"(?<![=!<>+\-*/&|^~%])=(?!=)"
-        )
-
+    
+    # ------------------------------------------------------------------------------------------ S43
+    def check_comma_spacing(self) -> None:
+        space_before_comma_re = re.compile(r"\s+,")
+        no_space_after_comma_re = re.compile(r",(?!\s|$)")
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
                 continue
+            text = self._strip_comments(f.read_text(errors="replace"))
+            for i, line in enumerate(text.splitlines(), 1):
+                if space_before_comma_re.search(line):
+                    self.bad("S43", f, f"line {i}: space before ',' — remove it (R-F6)")
+                if no_space_after_comma_re.search(line):
+                    self.bad("S43", f, f"line {i}: missing space after ',' (R-F6)")
 
-            text = self._strip_comments(
-                f.read_text(errors="replace")
-            )
-
-            lines = text.splitlines()
-
-            for i, line in enumerate(lines):
-                if not bad_re.search(line):
-                    continue
-
-                stripped = line.strip()
-
-                if re.match(r"^(localparam|parameter)\b", stripped, re.I):
-                    continue
-                if self._is_alignment_spacing(lines, i):
-                    continue
-
-                self.bad(
-                    "S40",
-                    f,
-                    f"line {i + 1}: extra space around '=' — "
-                    f"use exactly one space (R-F1)"
-                )
-
-    def _is_alignment_spacing(self, lines, index):
-        line = lines[index]
-
-        # Current line must contain a plain assignment '='
-        m = re.search(
-            r"(?<![=!<>+\-*/&|^~%])=(?!=)",
-            line
-        )
-
-        if not m:
-            return False
-
-        eq_pos = m.start()
-
-        # Check nearby lines for an assignment at the same column.
-        for j in (index - 1, index + 1):
-            if j < 0 or j >= len(lines):
-                continue
-
-            other = lines[j]
-
-            other_m = re.search(
-                r"(?<![=!<>+\-*/&|^~%])=(?!=)",
-                other
-            )
-
-            if not other_m:
-                continue
-
-            # Same '=' column means intentional alignment.
-            if other_m.start() == eq_pos:
-                return True
-
-        return False
     # ---------------------VERIFICATION------------------------------------------------------------
     # ------------------------------------------------------------------------------------------ S41
     def check_testbenches(self) -> None:
@@ -1326,6 +1475,68 @@ class Checker:
         print("See docs/guidelines/CODING_STANDARD.md for the rule that each code maps to.")
         return min(len(self.problems), 100)
 
+    @staticmethod
+    def _extract_port_header(text: str, after_mod_name: int) -> str:
+        i, n = after_mod_name, len(text)
+        while i < n and text[i].isspace():
+            i += 1
+        if i < n and text[i] == "#":
+            i += 1
+            while i < n and text[i].isspace():
+                i += 1
+            if i < n and text[i] == "(":
+                depth = 0
+                while i < n:
+                    if text[i] == "(":
+                        depth += 1
+                    elif text[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            i += 1
+                            break
+                    i += 1
+        while i < n and text[i].isspace():
+            i += 1
+        if i < n and text[i] == "(":
+            start, depth = i, 0
+            while i < n:
+                if text[i] == "(":
+                    depth += 1
+                elif text[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
+                i += 1
+        return ""
+
+    def _iter_module_ports(self, text: str):
+        """Har module ke liye (mod_name, ordered_port_names, header_text) yield
+        karta hai. Comma-tokenizing use karta hai (line-based nahi), isliye
+        formatting/whitespace/line-wrap se independent hai."""
+        mod_re = re.compile(r"\bmodule\s+([A-Za-z_]\w*)")
+        port_kw_re = re.compile(r"\b(?:input|output|inout)\b")
+        name_re = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*$")
+
+        for mm in mod_re.finditer(text):
+            header = self._extract_port_header(text, mm.end())
+            inner = header.strip()
+            if inner.startswith("(") and inner.endswith(")"):
+                inner = inner[1:-1]
+
+            ports = []
+            for tok in self._split_top_level(inner):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if port_kw_re.search(tok):
+                    after_kw = port_kw_re.split(tok, maxsplit=1)[-1]
+                    m = name_re.search(after_kw)
+                else:
+                    m = name_re.search(tok)
+                if m:
+                    ports.append(m.group(1))
+            yield mm.group(1), ports, header
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fix-readmes", action="store_true",
@@ -1347,9 +1558,8 @@ def main() -> int:
     c.check_case_conventions()
     c.check_assignment_style()
     c.check_multibit_boolean()
-    #c.check_magic_numbers()
+    c.check_magic_numbers()
     c.check_valid_ready()
-    #c.check_indentation()
     c.check_begin_end()
     c.check_line_length()
     c.check_default_nettype()
@@ -1375,6 +1585,7 @@ def main() -> int:
     c.check_call_parenthesis_spacing()
     c.check_case_keywords()
     c.check_shared_types_in_pkg()
+    c.check_comma_spacing()
     
     return c.report()
 
