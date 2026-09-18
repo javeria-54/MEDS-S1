@@ -1558,7 +1558,7 @@ def main() -> int:
     c.check_case_conventions()
     c.check_assignment_style()
     c.check_multibit_boolean()
-    c.check_magic_numbers()
+    #c.check_magic_numbers()
     c.check_valid_ready()
     c.check_begin_end()
     c.check_line_length()

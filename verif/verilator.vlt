@@ -19,9 +19,9 @@ lint_off -rule UNUSEDPARAM -file "*s1_pkg.sv"
 
 // Testbenches legitimately declare signals that only some test paths drive, and
 // deliberately mix widths when building corner-case stimulus.
-lint_off -rule UNUSEDSIGNAL -file "*verif/unit/*"
-lint_off -rule WIDTHTRUNC   -file "*verif/unit/*"
-lint_off -rule WIDTHEXPAND  -file "*verif/unit/*"
+//lint_off -rule UNUSEDSIGNAL -file "*verif/unit/*"
+//lint_off -rule WIDTHTRUNC   -file "*verif/unit/*"
+//lint_off -rule WIDTHEXPAND  -file "*verif/unit/*"
 lint_off -rule DECLFILENAME -file "*verif/*"
 
 // `make lint` checks the whole RTL tree as a library, so there is deliberately
