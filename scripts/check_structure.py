@@ -76,7 +76,8 @@ class Checker:
                 continue
             head = f.read_text(errors="replace")[:800]
             if "SPDX-License-Identifier" not in head:
-                self.bad("S2", f, "missing SPDX-License-Identifier header (R-D2)")
+                self.bad("S2", f, "missing SPDX-License-Identifier header in the "
+                                   "first 800 characters (R-D2)")
 
     # --------------------------------------Naming (R-N)---------------------------------------------
     # -------------------------------------------------------------------------------------- S3/S4/S5
@@ -88,16 +89,18 @@ class Checker:
             if self._skip(f):
                 continue
             text = f.read_text(errors="replace")
-            text = self._strip_comments(text)          
+            text = self._strip_comments(text)
 
             mods = mod_re.findall(text)
             if not mods:
                 continue                              # package-only file
             if f.stem not in mods:
                 self.bad("S3", f, f"no module named '{f.stem}' (found {', '.join(mods)}) (R-N1)")
-            for m in mods:
+            for mm in mod_re.finditer(text):
+                m = mm.group(1)
                 if not m.startswith(MODULE_PREFIXES):
-                    self.bad("S4", f, f"module '{m}' lacks a mandated prefix "
+                    line_no = self._lineno(text, mm.start())
+                    self.bad("S4", f, f"line {line_no}: module '{m}' lacks a mandated prefix "
                                       f"{MODULE_PREFIXES} (R-N2)")
 
             # S5 applies to module PORTS, not to task/function arguments, and
@@ -106,7 +109,7 @@ class Checker:
             if "verif" in f.parts:
                 continue
             depth = 0                                  # task/function nesting
-            for line in text.splitlines():
+            for i, line in enumerate(text.splitlines(), 1):
                 if re.match(r"\s*(task|function)\b", line):
                     depth += 1
                 elif re.match(r"\s*end(task|function)\b", line):
@@ -120,7 +123,7 @@ class Checker:
                 if port in ("clk_i", "rst_ni"):
                     continue
                 if not port.endswith(("_i", "_o", "_io")):
-                    self.bad("S5", f, f"port '{port}' lacks _i/_o/_io suffix (R-N3)")
+                    self.bad("S5", f, f"line {i}: port '{port}' lacks _i/_o/_io suffix (R-N3)")
 
     # -------------------------------------------------------------------------------------------- S6
     def check_dq_naming(self) -> None:
@@ -133,15 +136,19 @@ class Checker:
             text = self._strip_comments(f.read_text(errors="replace"))
             # 'begin : label' ko blank kar do taake label name signal na samjha jaye
             text = label_re.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
-            reported: set[str] = set()
-            for decl in decl_re.findall(text):
+            reported: set[tuple[str, int]] = set()
+            for decl_m in decl_re.finditer(text):
+                decl = decl_m.group(0)
                 for m in name_re.finditer(decl):
                     full = m.group(0)
-                    if full in reported:
+                    abs_pos = decl_m.start() + m.start()
+                    line_no = self._lineno(text, abs_pos)
+                    key = (full, line_no)
+                    if key in reported:
                         continue
-                    reported.add(full)
+                    reported.add(key)
                     self.bad("S6", f,
-                        f"'{full}' uses banned suffix '_{m.group(2)}' — "
+                        f"line {line_no}: '{full}' uses banned suffix '_{m.group(2)}' — "
                         f"use _d (comb next-state) / _q (registered) instead (R-N6)")
 
     # -------------------------------------------------------------------------------------------- S7
@@ -154,9 +161,11 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            for name in param_re.findall(text):
+            for m in param_re.finditer(text):
+                name = m.group(1)
                 if name != name.upper():
-                    self.bad("S7", f, f"parameter '{name}' must be UPPER_SNAKE (R-N5)")
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S7", f, f"line {line_no}: parameter '{name}' must be UPPER_SNAKE (R-N5)")
 
     def check_signal_naming(self) -> None:
         decl_re = re.compile(
@@ -176,13 +185,15 @@ class Checker:
             # (line numbers/positions preserve rehte hain, sirf content nikal jata hai)
             text = param_strip_re.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
 
-            for names in decl_re.findall(text):
+            for dm in decl_re.finditer(text):
+                names = dm.group(1)
+                line_no = self._lineno(text, dm.start())
                 for name in re.split(r"\s*,\s*", names):
                     name = name.strip()
                     if not name:
                         continue
                     if name != name.lower():
-                        self.bad("S7", f, f"signal '{name}' must be lower_snake (R-N5)")
+                        self.bad("S7", f, f"line {line_no}: signal '{name}' must be lower_snake (R-N5)")
 
     def check_type_naming(self) -> None:
         # typedef struct/union/logic/... { ... } name_t;   (non-enum typedefs)
@@ -193,9 +204,11 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            for _body, type_name in type_re.findall(text):
+            for m in type_re.finditer(text):
+                type_name = m.group(2)
                 if not type_name.endswith("_t"):
-                    self.bad("S7", f, f"type '{type_name}' must end in _t (R-N5)")
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S7", f, f"line {line_no}: type '{type_name}' must end in _t (R-N5)")
 
     def check_enum_naming(self) -> None:
         enum_re = re.compile(r"typedef\s+enum\b.*?\{(.*?)\}\s*(\w+)\s*;", re.S)
@@ -204,19 +217,28 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            for body, type_name in enum_re.findall(text):
+            for m in enum_re.finditer(text):
+                body, type_name = m.group(1), m.group(2)
+                line_no = self._lineno(text, m.start())
                 if not type_name.endswith("_e"):
-                    self.bad("S7", f, f"enum type '{type_name}' must end in _e (R-N5)")
+                    self.bad("S7", f, f"line {line_no}: enum type '{type_name}' must end in _e (R-N5)")
+                body_start = m.start(1)
+                search_from = body_start
                 for raw in body.split(","):
-                    raw = raw.strip()
-                    if not raw:
+                    raw_stripped = raw.strip()
+                    if not raw_stripped:
+                        search_from += len(raw) + 1
                         continue
-                    vm = value_re.match(raw)
+                    vm = value_re.match(raw_stripped)
                     if not vm:
+                        search_from += len(raw) + 1
                         continue
                     val = vm.group(1)
                     if val != val.upper():
-                        self.bad("S7", f, f"enum value '{val}' must be ALL_CAPS (R-N9)")
+                        idx = text.find(val, search_from)
+                        v_line = self._lineno(text, idx if idx != -1 else m.start())
+                        self.bad("S7", f, f"line {v_line}: enum value '{val}' must be ALL_CAPS (R-N9)")
+                    search_from += len(raw) + 1
         
     # ------------------------------------------------------------------------------------------- S8
     def check_clock_reset(self) -> None:
@@ -230,8 +252,8 @@ class Checker:
             text = self._strip_comments(text)
             if not re.search(r"^\s*module\s+", text, re.M):
                 continue
-            ports, depth = [], 0
-            for line in text.splitlines():
+            depth = 0
+            for i, line in enumerate(text.splitlines(), 1):
                 if re.match(r"\s*(task|function)\b", line):
                     depth += 1
                 elif re.match(r"\s*end(task|function)\b", line):
@@ -239,12 +261,12 @@ class Checker:
                 if depth:
                     continue
                 m = port_re.match(line)
-                if m:
-                    ports.append(m.group(1))
-            for p in ports:
+                if not m:
+                    continue
+                p = m.group(1)
                 if not clkrst_re.search(p) or p in ("clk_i", "rst_ni"):
                     continue
-                self.bad("S8", f, f"port '{p}' — only clk_i/rst_ni allowed "
+                self.bad("S8", f, f"line {i}: port '{p}' — only clk_i/rst_ni allowed "
                                     f"(R-N10); reset ports must be named rst_ni (R-N4)")
 
     # ------------------------------------------------------------------------------------------- S9
@@ -259,18 +281,24 @@ class Checker:
                 continue
             text = f.read_text(errors="replace")
             text = self._strip_comments(text)
-            for name in param_re.findall(text):
+            for m in param_re.finditer(text):
+                name = m.group(1)
                 if name != name.upper():
-                    self.bad("S9", f, f"parameter '{name}' must be UPPER_SNAKE (R-N5)")
-            for name in type_re.findall(text):
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S9", f, f"line {line_no}: parameter '{name}' must be UPPER_SNAKE (R-N5)")
+            for m in type_re.finditer(text):
+                name = m.group(1)
                 if not name.endswith("_t"):
-                    self.bad("S9", f, f"typedef '{name}' must end in _t (R-N5)")
-            for name in sig_re.findall(text):
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S9", f, f"line {line_no}: typedef '{name}' must end in _t (R-N5)")
+            for m in sig_re.finditer(text):
+                name = m.group(1)
                 # skip enum-value-style ALL_CAPS constants and already-covered _t types
                 if name == name.upper() or name.endswith("_t"):
                     continue
                 if name != name.lower():
-                    self.bad("S9", f, f"signal '{name}' must be lower_snake (R-N5)")
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S9", f, f"line {line_no}: signal '{name}' must be lower_snake (R-N5)")
 
     # ---------------------------Coding (R-C)-------------------------------------------------------
     # -------------------------------------------------------------------------------------- S10/S11
@@ -290,12 +318,14 @@ class Checker:
             text = f.read_text(errors="replace")
             text = self._strip_comments(text)
             for rx, msg in banned:
-                if rx.search(text):
-                    self.bad("S10", f, msg)
-            if mem_re.search(text) and f.name not in ("meds_s1_sram.sv",):
-                if "verif/" not in str(f):
-                    self.bad("S11", f, "memory array declared outside meds_s1_sram "
-                                    "(INTERFACES.md section 8, R-C5)")
+                for m in rx.finditer(text):
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S10", f, f"line {line_no}: {msg}")
+            for m in mem_re.finditer(text):
+                if f.name not in ("meds_s1_sram.sv",) and "verif/" not in str(f):
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S11", f, f"line {line_no}: memory array declared outside "
+                                    "meds_s1_sram (INTERFACES.md section 8, R-C5)")
 
     # ------------------------------------------------------------------------------------------ S12
     def check_assignment_style(self) -> None:
@@ -358,7 +388,8 @@ class Checker:
                     continue
                 clean = strip_parens(body)
                 if nonblocking_re.search(clean):
-                    self.bad("S12", f, "always_comb mein <= (non-blocking) "
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S12", f, f"line {line_no}: always_comb mein <= (non-blocking) "
                                         "should not be used only = (R-C1)")
 
             for m in ff_hdr_re.finditer(text):
@@ -367,23 +398,22 @@ class Checker:
                     continue
                 clean = strip_parens(body)
                 if blocking_re.search(clean):
-                    self.bad("S12", f, "always_ff mein = (blocking) "
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S12", f, f"line {line_no}: always_ff mein = (blocking) "
                                         "should not be used only <= (R-C1)")
 
     # ------------------------------------------------------------------------------------------ S13
     def check_case_default(self) -> None:
         comb_hdr_re = re.compile(r"\balways_comb\b")
         case_re = re.compile(r"\b(unique\s+|unique0\s+|priority\s+)?case\b")
-        # pehla non-empty statement nikaalne ke liye
-        first_stmt_re = re.compile(r"\s*([^;]+;)")
 
         def extract_block(text: str, after_idx: int):
             m = re.search(r"\bbegin\b", text[after_idx:])
             if not m:
                 semi = text.find(";", after_idx)
                 if semi == -1:
-                    return None
-                return text[after_idx:semi + 1]
+                    return None, None
+                return text[after_idx:semi + 1], after_idx
             begin_pos = after_idx + m.start()
             i = begin_pos + len("begin")
             depth = 1
@@ -397,9 +427,9 @@ class Checker:
                 else:
                     depth -= 1
                     if depth == 0:
-                        return text[begin_pos + len("begin"):tm.start()]
+                        return text[begin_pos + len("begin"):tm.start()], begin_pos + len("begin")
                 i = tm.end()
-            return None
+            return None, None
 
         for f in sorted(ROOT.rglob("*.sv")):
             if self._skip(f):
@@ -408,24 +438,25 @@ class Checker:
             text = self._strip_comments(text)
 
             for m in comb_hdr_re.finditer(text):
-                body = extract_block(text, m.end())
+                body, body_start = extract_block(text, m.end())
                 if body is None or not case_re.search(body):
                     continue  # case wala always_comb hi check karna hai
 
                 cm = case_re.search(body)
+                case_line = self._lineno(text, body_start + cm.start())
 
                 # --- Check 1: case se pehle koi assignment (default) honi chahiye ---
                 before_case = body[:cm.start()].strip()
                 if not before_case or "=" not in before_case:
                     self.bad("S13", f,
-                        "always_comb with case must assign a default before "
-                        "the case statement (R-C3)")
+                        f"line {case_line}: always_comb with case must assign a default "
+                        "before the case statement (R-C3)")
 
                 # --- Check 2: case 'unique' honi chahiye ---
                 if not cm.group(1) or "unique" not in cm.group(1):
                     self.bad("S13", f,
-                        "case inside always_comb must be `unique case`, not "
-                        "plain `case` (R-C3)")
+                        f"line {case_line}: case inside always_comb must be `unique case`, "
+                        "not plain `case` (R-C3)")
 
     # ------------------------------------------------------------------------------------------ S14
     def check_reset_policy(self) -> None:
@@ -437,26 +468,30 @@ class Checker:
             text = self._strip_comments(f.read_text(errors="replace"))
  
             # --- sequential blocks: async assert + active-low + structure ---
-            for sens, first_line in hdr_re.findall(text):
+            for hm in hdr_re.finditer(text):
+                sens, first_line = hm.group(1), hm.group(2)
                 sens_n = re.sub(r"\s+", " ", sens.strip())
                 if "rst_ni" not in sens_n:
                     continue                       # no reset — not this rule's concern
+                line_no = self._lineno(text, hm.start())
                 if sens_n != "posedge clk_i or negedge rst_ni":
-                    self.bad("S14", f, f"always_ff sensitivity '{sens_n}' must be "
-                                        f"'posedge clk_i or negedge rst_ni' — "
+                    self.bad("S14", f, f"line {line_no}: always_ff sensitivity '{sens_n}' must "
+                                        f"be 'posedge clk_i or negedge rst_ni' — "
                                         f"async assert, active-low (R-C4)")
                     continue
                 if not re.match(r"if\s*\(\s*!\s*rst_ni\s*\)", first_line.strip()):
-                    self.bad("S14", f, "always_ff with rst_ni: first statement "
-                                        "after 'begin' must be 'if (!rst_ni)' (R-C4)")
+                    self.bad("S14", f, f"line {line_no}: always_ff with rst_ni: first "
+                                        "statement after 'begin' must be 'if (!rst_ni)' (R-C4)")
  
             # --- combinational blocks: reset, if used, must be active-low ---
-            for body in comb_re.findall(text):
+            for cm in comb_re.finditer(text):
+                body = cm.group(1)
                 if re.search(r"\brst_ni\b", body):
                     # rst_ni must be used as active-low
                     if re.search(r"\bif\s*\(\s*rst_ni\s*\)", body):
-                        self.bad("S14", f, "rst_ni used as active-high in always_comb; "
-                            "must be active-low using !rst_ni (R-C4)")
+                        line_no = self._lineno(text, cm.start())
+                        self.bad("S14", f, f"line {line_no}: rst_ni used as active-high in "
+                            "always_comb; must be active-low using !rst_ni (R-C4)")
 
     # ------------------------------------------------------------------------------------------ S15
     def check_size(self) -> None:
@@ -479,14 +514,17 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            if casex_re.search(text):
-                self.bad("S16", f, "casex is banned outright -- x/z treated as "
-                                    "don't-care causes X-optimism; use unique case / "
-                                    "unique0 case (R-C11)")
-            if casez_re.search(text):
-                self.bad("S16", f, "casez found -- permitted only for priority-encoder "
-                                    "patterns with explicit reviewer sign-off in the PR "
-                                    "description; confirm sign-off exists (R-C11)")
+            for m in casex_re.finditer(text):
+                line_no = self._lineno(text, m.start())
+                self.bad("S16", f, f"line {line_no}: casex is banned outright -- x/z "
+                                    "treated as don't-care causes X-optimism; use unique "
+                                    "case / unique0 case (R-C11)")
+            for m in casez_re.finditer(text):
+                line_no = self._lineno(text, m.start())
+                self.bad("S16", f, f"line {line_no}: casez found -- permitted only for "
+                                    "priority-encoder patterns with explicit reviewer "
+                                    "sign-off in the PR description; confirm sign-off "
+                                    "exists (R-C11)")
 
     # ------------------------------------------------------------------------------------------ S17
     def check_magic_numbers(self) -> None:
@@ -526,7 +564,7 @@ class Checker:
             r")",
             re.S
         )
-        declared_in: dict[str, pathlib.Path] = {}
+        declared_in: dict[str, tuple[pathlib.Path, int]] = {}
         file_texts: dict[pathlib.Path, str] = {}
 
         files = [f for f in sorted(ROOT.rglob("*.sv")) if not self._skip(f)]
@@ -534,12 +572,12 @@ class Checker:
         for f in files:
             text = self._strip_comments(f.read_text(errors="replace"))
             file_texts[f] = text
-            for groups in type_decl_re.findall(text):
-                type_name = next((g for g in groups if g), None)
+            for m in type_decl_re.finditer(text):
+                type_name = next((g for g in m.groups() if g), None)
                 if type_name:
-                    declared_in.setdefault(type_name, f)
+                    declared_in.setdefault(type_name, (f, m.start()))
 
-        for type_name, decl_file in declared_in.items():
+        for type_name, (decl_file, pos) in declared_in.items():
             if decl_file.name == "s1_pkg.sv":
                 continue
 
@@ -553,8 +591,9 @@ class Checker:
 
             if used_elsewhere:
                 other_files = ", ".join(str(x) for x in used_elsewhere)
+                line_no = self._lineno(file_texts[decl_file], pos)
                 self.bad("S18", decl_file,
-                    f"type '{type_name}' is used in other module(s) "
+                    f"line {line_no}: type '{type_name}' is used in other module(s) "
                     f"({other_files}) but declared outside s1_pkg.sv -- shared "
                     f"types must live in s1_pkg.sv (R-C8)")
 
@@ -569,20 +608,24 @@ class Checker:
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
 
-            for name, rhs in assign_re.findall(text):
+            for m in assign_re.finditer(text):
+                name, rhs = m.group(1), m.group(2)
                 if ready_re.search(rhs):
-                    self.bad("S19", f, f"'{name}' driven by assign whose RHS "
-                                        f"references a 'ready' signal -- valid must not "
-                                        f"depend combinationally on ready (R-C10)")
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S19", f, f"line {line_no}: '{name}' driven by assign whose "
+                                        f"RHS references a 'ready' signal -- valid must "
+                                        f"not depend combinationally on ready (R-C10)")
 
             # nested begin/end-safe extraction (comb_re ki jagah)
-            for _header, body in self._extract_blocks(text, "always_comb"):
-                for name, rhs in comb_assign_re.findall(body):
+            for _header, body, body_start in self._extract_blocks(text, "always_comb"):
+                for m in comb_assign_re.finditer(body):
+                    name, rhs = m.group(1), m.group(2)
                     if ready_re.search(rhs):
-                        self.bad("S19", f, f"'{name}' assigned inside always_comb from "
-                                            f"an expression referencing 'ready' -- "
-                                            f"valid must not depend combinationally on "
-                                            f"ready (R-C10)")
+                        line_no = self._lineno(text, body_start + m.start())
+                        self.bad("S19", f, f"line {line_no}: '{name}' assigned inside "
+                                            f"always_comb from an expression referencing "
+                                            f"'ready' -- valid must not depend "
+                                            f"combinationally on ready (R-C10)")
             
     # ------------------------------------------------------------------------------------------ S20
     def check_wildcard_port_connect(self) -> None:
@@ -591,9 +634,10 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            if wildcard_re.search(text):
-                self.bad("S20", f, "'.*' implicit port connection found -- "
-                                    "every port must be connected explicitly, "
+            for m in wildcard_re.finditer(text):
+                line_no = self._lineno(text, m.start())
+                self.bad("S20", f, f"line {line_no}: '.*' implicit port connection found "
+                                    "-- every port must be connected explicitly, "
                                     "e.g. .clk_i(clk_i) (R-C12)")
 
     # ------------------------------------------------------------------------------------------ S21
@@ -623,9 +667,11 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            for name, rhs in param_re.findall(text):
+            for m in param_re.finditer(text):
+                name, rhs = m.group(1), m.group(2)
                 if "$clog2" in rhs or re.search(r"\b[A-Z][A-Z0-9_]*\b", rhs):
-                    self.bad("S22", f, f"parameter '{name}' derived from "
+                    line_no = self._lineno(text, m.start())
+                    self.bad("S22", f, f"line {line_no}: parameter '{name}' derived from "
                                         f"$clog2/another parameter -- review whether "
                                         f"it should be localparam instead (R-C14)")
 
@@ -719,12 +765,15 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            for body in block_re.findall(text):
+            for bm in block_re.finditer(text):
+                body = bm.group(1)
+                line_no = self._lineno(text, bm.start())
                 for name, n in self._count_assigns_on_path(body).items():
                     if n > 1:
-                        self.bad("S24", f, f"'{name}' can receive {n} whole-signal <= "
-                                            f"writes on a single execution path -- later "
-                                            f"write silently wins (R-C19)")
+                        self.bad("S24", f, f"line {line_no}: '{name}' can receive {n} "
+                                            f"whole-signal <= writes on a single "
+                                            f"execution path -- later write silently "
+                                            f"wins (R-C19)")
 
     # ------------------------------------------------------------------------------------------ S25
     def check_multibit_boolean(self) -> None:
@@ -759,6 +808,7 @@ class Checker:
                 cond, _end = self._match_paren(text, m.end() - 1)
                 if cond is None:
                     continue
+                line_no = self._lineno(text, m.start())
                 for operand in self._split_top_level(cond):
                     op = operand.strip()
                     if not op or cmp_re.search(op) or reduction_re.match(op):
@@ -774,13 +824,13 @@ class Checker:
                         if lo == hi:
                             continue                  # [3:3] -- still one bit
                         self.bad("S25", f,
-                            f"'{op}' (part-select) used directly as a boolean "
-                            f"condition -- compare explicitly, e.g. != '0 (R-C20)")
+                            f"line {line_no}: '{op}' (part-select) used directly as a "
+                            f"boolean condition -- compare explicitly, e.g. != '0 (R-C20)")
                         continue
                     if multibit.get(name):
                         self.bad("S25", f,
-                            f"'{op}' is a multi-bit signal used directly in a "
-                            f"boolean condition -- write '{name} != '0' to make "
+                            f"line {line_no}: '{op}' is a multi-bit signal used directly "
+                            f"in a boolean condition -- write '{name} != '0' to make "
                             f"the intent explicit (R-C20)")
 
     # ------------------------------------------------------------------------------------------ S26
@@ -790,17 +840,20 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            if non_ansi_re.search(text):
-                self.bad("S26", f, "port list looks Verilog-95 style -- use "
-                                    "full ANSI declarations (R-C22)")
-            for mod_name, ports, _header in self._iter_module_ports(text):
+            for m in non_ansi_re.finditer(text):
+                line_no = self._lineno(text, m.start())
+                self.bad("S26", f, f"line {line_no}: port list looks Verilog-95 style -- "
+                                    "use full ANSI declarations (R-C22)")
+            for mod_name, ports, _header, mod_pos in self._iter_module_ports(text):
                 clk_idx = next((i for i, p in enumerate(ports) if p == "clk_i"), None)
                 rst_idx = next((i for i, p in enumerate(ports) if p == "rst_ni"), None)
+                line_no = self._lineno(text, mod_pos)
                 if clk_idx not in (None, 0):
-                    self.bad("S26", f, f"module '{mod_name}': clk_i must be the first port (R-C22)")
+                    self.bad("S26", f, f"line {line_no}: module '{mod_name}': clk_i must "
+                                        f"be the first port (R-C22)")
                 if clk_idx is not None and rst_idx is not None and rst_idx != clk_idx + 1:
-                    self.bad("S26", f, f"module '{mod_name}': rst_ni must immediately "
-                                        f"follow clk_i (R-C22)")
+                    self.bad("S26", f, f"line {line_no}: module '{mod_name}': rst_ni must "
+                                        f"immediately follow clk_i (R-C22)")
 
     # ------------------------------------------------------------------------------------------ S27
     def check_generate_labels(self) -> None:
@@ -809,8 +862,10 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            if genfor_re.search(text):
-                self.bad("S27", f, "generate-for missing ': label' on begin (R-C23)")
+            for m in genfor_re.finditer(text):
+                line_no = self._lineno(text, m.start())
+                self.bad("S27", f, f"line {line_no}: generate-for missing ': label' on "
+                                    "begin (R-C23)")
 
     # ------------------------------------------------------------------------------------------ S28
     def check_manual_sign_handling(self) -> None:
@@ -908,8 +963,8 @@ class Checker:
                 self.bad(
                     "S29",
                     f,
-                    f"'{match.group(0)}' is a hierarchical reference into "
-                    "an instance -- only allowed inside an SVA that is "
+                    f"line {line_no}: '{match.group(0)}' is a hierarchical reference "
+                    "into an instance -- only allowed inside an SVA that is "
                     "macro-guarded out of synthesis (R-C25)",
                 )
 
@@ -969,6 +1024,7 @@ class Checker:
             raw = f.read_text(errors="replace")
             for m in re.finditer(r"always_latch\b", raw):
                 line_start = raw.rfind("\n", 0, m.start()) + 1
+                line_no = self._lineno(raw, m.start())
 
                 # 1) same line trailing comment (before or after always_latch on this line)?
                 line_end = raw.find("\n", m.start())
@@ -995,8 +1051,8 @@ class Checker:
                     break                  # first non-blank line decides it
 
                 if not justified:
-                    self.bad("S31", f, "always_latch with no justification "
-                                        "comment above it (R-C18)")
+                    self.bad("S31", f, f"line {line_no}: always_latch with no "
+                                        "justification comment above it (R-C18)")
 
     # ------------------------------------------------------------------------------------------ S32
     def check_fsm_state_type(self) -> None:
@@ -1019,23 +1075,27 @@ class Checker:
             text = self._strip_comments(f.read_text(errors="replace"))
 
             # -- raw logic-vector (ya single-bit) state register --
-            for names in raw_decl_re.findall(text):
+            for dm in raw_decl_re.finditer(text):
+                names = dm.group(1)
+                line_no = self._lineno(text, dm.start())
                 for name in re.split(r"\s*,\s*", names):
                     name = name.strip()
                     if state_q_name_re.match(name):
-                        self.bad("S32", f, f"'{name}' declared as raw logic "
-                                            f"vector — state register must be "
+                        self.bad("S32", f, f"line {line_no}: '{name}' declared as raw "
+                                            f"logic vector — state register must be "
                                             f"a typedef'd enum (R-M1)")
 
             # -- bare numeric literal comparison (==, !=, dono operand orders) --
             for m in bare_cmp_re.finditer(text):
                 name = m.group(1) or m.group(2)
-                self.bad("S32", f, f"'{name}' compared against a bare numeric "
-                                    f"literal — compare via the enum name, not "
-                                    f"an integer (R-M1)")
+                line_no = self._lineno(text, m.start())
+                self.bad("S32", f, f"line {line_no}: '{name}' compared against a bare "
+                                    f"numeric literal — compare via the enum name, "
+                                    f"not an integer (R-M1)")
 
             # -- state VALUES defined via localparam instead of enum members --
-            for state_sig, body in case_re.findall(text):
+            for cm in case_re.finditer(text):
+                state_sig, body = cm.group(1), cm.group(2)
                 labels: set[str] = set()
                 for group in label_re.findall(body):
                     for name in re.split(r"\s*,\s*", group):
@@ -1045,9 +1105,11 @@ class Checker:
                 for label in sorted(labels):
                     lp_re = re.compile(
                         rf"\blocalparam\b[^;]*\b{re.escape(label)}\b\s*=", re.I)
-                    if lp_re.search(text):
-                        self.bad("S32", f, f"state value '{label}' (used in "
-                                            f"case({state_sig})) is declared "
+                    lm = lp_re.search(text)
+                    if lm:
+                        line_no = self._lineno(text, lm.start())
+                        self.bad("S32", f, f"line {line_no}: state value '{label}' "
+                                            f"(used in case({state_sig})) is declared "
                                             f"via localparam, not as a member "
                                             f"of a typedef'd enum (R-M1)")
         
@@ -1068,11 +1130,11 @@ class Checker:
             for fsm in fsm_names:
                 q, d = f"{fsm}_q", f"{fsm}_d"
 
-                seq_idx = [i for i, (_, b) in enumerate(ff_blocks)
+                seq_idx = [i for i, (_, b, _p) in enumerate(ff_blocks)
                            if re.search(rf"\b{q}\s*<=", b)]
-                nxt_idx = [i for i, (_, b) in enumerate(comb_blocks)
+                nxt_idx = [i for i, (_, b, _p) in enumerate(comb_blocks)
                            if re.search(rf"\b{d}\s*=", b)]
-                out_idx = [i for i, (_, b) in enumerate(comb_blocks)
+                out_idx = [i for i, (_, b, _p) in enumerate(comb_blocks)
                            if re.search(r"\w+_o\s*=", b) and re.search(rf"\b{q}\b", b)]
 
                 # --- explicit block-count check (the part you were missing) ---
@@ -1092,12 +1154,14 @@ class Checker:
                 else:
                     # distinct signal NAMES, not raw '<=' occurrence count --
                     # an if(reset)/else pair both targeting state_q is normal.
-                    assigned = set(re.findall(r"(\w+)\s*<=", ff_blocks[seq_idx[0]][1]))
+                    seq_body, seq_pos = ff_blocks[seq_idx[0]][1], ff_blocks[seq_idx[0]][2]
+                    seq_line = self._lineno(text, seq_pos)
+                    assigned = set(re.findall(r"(\w+)\s*<=", seq_body))
                     extra = assigned - {q}
                     if extra:
-                        self.bad("S33", f, f"FSM '{fsm}': sequential block also "
-                                            f"assigns {', '.join(sorted(extra))} — "
-                                            f"it must do nothing but register the "
+                        self.bad("S33", f, f"line {seq_line}: FSM '{fsm}': sequential "
+                                            f"block also assigns {', '.join(sorted(extra))} "
+                                            f"— it must do nothing but register the "
                                             f"state (R-M2)")
 
                 # --- next-state block: exactly one, touches state_d, no outputs ---
@@ -1105,15 +1169,17 @@ class Checker:
                     self.bad("S33", f, f"FSM '{fsm}': expected exactly one "
                                         f"always_comb driving {d}, found {len(nxt_idx)} (R-M2)")
                 elif re.search(r"\w+_o\s*=", comb_blocks[nxt_idx[0]][1]):
-                    self.bad("S33", f, f"FSM '{fsm}': next-state block also "
-                                        f"drives an output port — split it out (R-M2)")
+                    nxt_line = self._lineno(text, comb_blocks[nxt_idx[0]][2])
+                    self.bad("S33", f, f"line {nxt_line}: FSM '{fsm}': next-state block "
+                                        f"also drives an output port — split it out (R-M2)")
 
                 # --- output block(s): assign outputs, never state_d ---
                 for i in out_idx:
-                    b = comb_blocks[i][1]
+                    b, pos = comb_blocks[i][1], comb_blocks[i][2]
                     if re.search(rf"\b{d}\s*=", b):
-                        self.bad("S33", f, f"FSM '{fsm}': output block also "
-                                            f"assigns {d} — split it out (R-M2)")
+                        out_line = self._lineno(text, pos)
+                        self.bad("S33", f, f"line {out_line}: FSM '{fsm}': output block "
+                                            f"also assigns {d} — split it out (R-M2)")
 
     # ------------------------------------------------------------------------------------------ S34
     def check_fsm_default_case(self) -> None:
@@ -1133,6 +1199,7 @@ class Checker:
             for match in case_re.finditer(text):
                 state_sig = match.group(1)
                 body = match.group(2)
+                line_no = self._lineno(text, match.start())
                 prefix = text[:match.start()]
                 prefix = prefix.rstrip()
                 if re.search(r"\bunique\s*$", prefix, re.I):
@@ -1142,21 +1209,22 @@ class Checker:
                 )
                 if not m:
                     self.bad(
-                        "S34", f, f"case ({state_sig}) has no " f"default branch (R-M3)"
+                        "S34", f, f"line {line_no}: case ({state_sig}) has no "
+                        f"default branch (R-M3)"
                     )
                     continue
                 default_body = m.group(1).strip()
                 if not default_body:
                     self.bad(
                         "S34",
-                        f, f"case ({state_sig}): default branch must "
+                        f, f"line {line_no}: case ({state_sig}): default branch must "
                         f"return to a safe state, not be empty " f"(R-M3)"
                     )
                     continue
                 if re.search(r"\b'x\b", default_body, re.I):
                     self.bad(
                         "S34",
-                        f, f"case ({state_sig}): default branch must "
+                        f, f"line {line_no}: case ({state_sig}): default branch must "
                         f"return to a safe state, not assign 'x " f"(R-M3)"
                     )
 
@@ -1285,12 +1353,14 @@ class Checker:
             if self._skip(f):
                 continue
             text = self._strip_comments(f.read_text(errors="replace"))
-            if bare_begin.search(text):
-                self.bad("S36", f, "'begin' alone on its own line — keep it on the "
-                                    "line that opens the block (R-F2)")
-            if split_else.search(text):
-                self.bad("S36", f, "'end' and 'else' on separate lines — use "
-                                    "'end else begin' on one line (R-F2)")
+            for m in bare_begin.finditer(text):
+                line_no = self._lineno(text, m.start())
+                self.bad("S36", f, f"line {line_no}: 'begin' alone on its own line — "
+                                    "keep it on the line that opens the block (R-F2)")
+            for m in split_else.finditer(text):
+                line_no = self._lineno(text, m.start())
+                self.bad("S36", f, f"line {line_no}: 'end' and 'else' on separate "
+                                    "lines — use 'end else begin' on one line (R-F2)")
 
     # ------------------------------------------------------------------------------------------ S37
     def check_line_length(self) -> None:
@@ -1409,8 +1479,22 @@ class Checker:
         return text
 
     @staticmethod
-    def _extract_blocks(text: str, keyword: str) -> list[tuple[str, str]]:
-        """Returns list of (header, body) for every `keyword @(...)? begin...end`."""
+    def _lineno(text: str, pos: int) -> int:
+        """1-indexed line number for a character offset into `text`. Used
+        everywhere a rule needs to report *where* in the file it fired,
+        not just *which* file — so every rule's output is consistent."""
+        if pos < 0:
+            pos = 0
+        if pos > len(text):
+            pos = len(text)
+        return text.count("\n", 0, pos) + 1
+
+    @staticmethod
+    def _extract_blocks(text: str, keyword: str) -> list[tuple[str, str, int]]:
+        """Returns list of (header, body, body_start_offset) for every
+        `keyword @(...)? begin...end`. body_start_offset is the character
+        index in `text` where `body` begins, so callers can turn any match
+        inside `body` back into an absolute line number."""
         out = []
         for m in re.finditer(rf"{keyword}\s*(@\s*\([^)]*\))?\s*begin\b", text):
             header = m.group(1) or ""
@@ -1421,7 +1505,7 @@ class Checker:
                     break
                 depth += 1 if nxt.group(0) == "begin" else -1
                 i += nxt.end()
-            out.append((header, text[m.end():i]))
+            out.append((header, text[m.end():i], m.end()))
         return out
     
     @staticmethod
@@ -1510,9 +1594,11 @@ class Checker:
         return ""
 
     def _iter_module_ports(self, text: str):
-        """Har module ke liye (mod_name, ordered_port_names, header_text) yield
-        karta hai. Comma-tokenizing use karta hai (line-based nahi), isliye
-        formatting/whitespace/line-wrap se independent hai."""
+        """Har module ke liye (mod_name, ordered_port_names, header_text,
+        mod_name_match_start) yield karta hai. Comma-tokenizing use karta hai
+        (line-based nahi), isliye formatting/whitespace/line-wrap se
+        independent hai. mod_name_match_start caller ko line number nikalne
+        deta hai."""
         mod_re = re.compile(r"\bmodule\s+([A-Za-z_]\w*)")
         port_kw_re = re.compile(r"\b(?:input|output|inout)\b")
         name_re = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*$")
@@ -1535,7 +1621,7 @@ class Checker:
                     m = name_re.search(tok)
                 if m:
                     ports.append(m.group(1))
-            yield mm.group(1), ports, header
+            yield mm.group(1), ports, header, mm.start()
 
 def main() -> int:
     ap = argparse.ArgumentParser()
