@@ -24,12 +24,14 @@ FIGS    := $(DOCS)/figures
 PDF     := $(DOCS)/MEDS-S1-Specification.pdf
 SPEC    := specs/MEDS-S1-SPECIFICATION.md
 BUILD   := build
+VERIBLE_DIRS := rtl verif
 
 # Packages must be compiled before anything that imports them.
 RTL_PKGS  := $(shell find rtl -name '*_pkg.sv' 2>/dev/null | sort)
 RTL_MODS  := $(shell find rtl -name '*.sv' ! -name '*_pkg.sv' 2>/dev/null | sort)
 RTL_SRCS  := $(RTL_PKGS) $(RTL_MODS)
 CFG_FILE  := configs/$(CONFIG).yaml
+VERIBLE_SRCS := $(shell find $(VERIBLE_DIRS) \( -name '*.sv' -o -name '*.svh' \) 2>/dev/null | sort)
 
 export PUPPETEER_EXECUTABLE_PATH ?= $(shell command -v google-chrome || command -v chromium || command -v chromium-browser)
 
@@ -82,6 +84,8 @@ check-tools:
 	echo "Required:"; \
 	need $(PY)                     "everything"; \
 	need verilator                 "simulation and lint"; \
+	opt verible-verilog-lint       "style lint"; \
+	opt verible-verilog-format     "formatting"; \
 	echo "Software (T-06 onward):"; \
 	opt riscv64-unknown-elf-gcc    "building software"; \
 	echo "Verification (R-05, M-11, T-07):"; \
@@ -119,6 +123,27 @@ lint: $(CFG_FILE)
 	  verif/verilator.vlt $(RTL_SRCS) \
 	  && echo "  lint clean"
 
+.PHONY: verible-lint verible-format-check verible-format verible-check
+
+verible-lint:
+	@echo "verible lint: $(words $(VERIBLE_SRCS)) files"
+	@verible-verilog-lint --waiver_files lint.waiver $(VERIBLE_SRCS) \
+	  && echo "  verible lint clean"
+
+verible-format-check:
+	@fail=0; \
+	for f in $(VERIBLE_SRCS); do \
+	  verible-verilog-format "$$f" | diff -q "$$f" - >/dev/null 2>&1 \
+	    || { echo "NEEDS FORMAT: $$f"; fail=1; }; \
+	done; \
+	[ $$fail -eq 0 ] && echo "  format clean" || exit 1
+
+verible-format:
+	@verible-verilog-format --inplace $(VERIBLE_SRCS)
+	@echo "formatted $(words $(VERIBLE_SRCS)) files"
+	
+verible-check: verible-lint verible-format-check
+
 # =============================================================================
 # Test
 # =============================================================================
@@ -129,7 +154,7 @@ test-unit:
 test: test-unit
 
 .PHONY: ci
-ci: check lint test-unit
+ci: check lint verible-check test-unit 
 	@echo
 	@echo "PR gate passed. Growth slots still disabled:"
 	@grep -c 'if: false' .github/workflows/pr.yml | xargs -I{} echo "  pr.yml:      {} job(s)"
