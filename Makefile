@@ -141,7 +141,7 @@ verible-format-check:
 verible-format:
 	@verible-verilog-format --inplace $(VERIBLE_SRCS)
 	@echo "formatted $(words $(VERIBLE_SRCS)) files"
-	
+
 verible-check: verible-lint verible-format-check
 
 # =============================================================================
@@ -154,7 +154,7 @@ test-unit:
 test: test-unit
 
 .PHONY: ci
-ci: check lint verible-check test-unit 
+ci: check lint verible-check test-unit
 	@echo
 	@echo "PR gate passed. Growth slots still disabled:"
 	@grep -c 'if: false' .github/workflows/pr.yml | xargs -I{} echo "  pr.yml:      {} job(s)"
