@@ -66,7 +66,7 @@ jobs:
       - name: lint ${{ matrix.config }}
         run: make lint CONFIG=${{ matrix.config }}
 
-    verible:
+  verible:
     name: verible lint
     runs-on: ubuntu-latest
     steps:

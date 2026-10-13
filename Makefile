@@ -25,6 +25,7 @@ PDF     := $(DOCS)/MEDS-S1-Specification.pdf
 SPEC    := specs/MEDS-S1-SPECIFICATION.md
 BUILD   := build
 VERIBLE_DIRS := rtl verif
+VERIBLE_VERSION ?= v0.0-4250-gc1fe2daf
 
 # Packages must be compiled before anything that imports them.
 RTL_PKGS  := $(shell find rtl -name '*_pkg.sv' 2>/dev/null | sort)
@@ -49,6 +50,7 @@ help:
 	@echo "    lint           lint and elaborate CONFIG=$(CONFIG)"
 	@echo "    test-unit      run unit testbenches      [TB=<name> for one]"
 	@echo "    ci             everything the PR gate runs"
+	@echo "    hooks          install git pre-commit hook (once per clone)"
 	@echo
 	@echo "  Documentation"
 	@echo "    docs           figures + specification PDF"
@@ -83,9 +85,20 @@ check-tools:
 	         else echo "absent -- $$2"; fi; }; \
 	echo "Required:"; \
 	need $(PY)                     "everything"; \
+	opt pre-commit                 "git hooks (pip install pre-commit)"; \
+	[ -f .git/hooks/pre-commit ] \
+	  && echo "  git hook                     OK" \
+	  || echo "  git hook                     absent -- run: make hooks"; \
+	echo; \
 	need verilator                 "simulation and lint"; \
 	opt verible-verilog-lint       "style lint"; \
 	opt verible-verilog-format     "formatting"; \
+	if command -v verible-verilog-lint >/dev/null 2>&1; then \
+	  found=$$(verible-verilog-lint --version | head -n 1 | awk '{print $$2}'); \
+	  printf "  %-28s " "verible version"; \
+	  if [ "$$found" = "$(VERIBLE_VERSION)" ]; then echo "OK ($$found)"; \
+	  else echo "MISMATCH -- expected $(VERIBLE_VERSION), found $$found"; fi; \
+	fi; \
 	echo "Software (T-06 onward):"; \
 	opt riscv64-unknown-elf-gcc    "building software"; \
 	echo "Verification (R-05, M-11, T-07):"; \
@@ -143,6 +156,13 @@ verible-format:
 	@echo "formatted $(words $(VERIBLE_SRCS)) files"
 
 verible-check: verible-lint verible-format-check
+
+.PHONY: hooks
+hooks:
+	@command -v pre-commit >/dev/null 2>&1 \
+	  || { echo "pre-commit not found. Run: pip install pre-commit"; exit 1; }
+	@pre-commit install
+	@echo "pre-commit hook installed"
 
 # =============================================================================
 # Test
