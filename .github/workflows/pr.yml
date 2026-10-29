@@ -78,6 +78,7 @@ jobs:
           mkdir -p "$HOME/verible"
           tar -xzf verible.tar.gz -C "$HOME/verible" --strip-components=1
           echo "$HOME/verible/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/verible/bin:$PATH"
           verible-verilog-lint --version
       - name: verible lint
         run: make verible-check
