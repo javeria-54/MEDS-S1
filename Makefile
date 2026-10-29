@@ -26,6 +26,7 @@ SPEC    := specs/MEDS-S1-SPECIFICATION.md
 BUILD   := build
 VERIBLE_DIRS := rtl verif
 VERIBLE_VERSION ?= v0.0-4250-gc1fe2daf
+VERILATOR_VERSION ?= 5.020
 
 # Packages must be compiled before anything that imports them.
 RTL_PKGS  := $(shell find rtl -name '*_pkg.sv' 2>/dev/null | sort)
@@ -91,6 +92,16 @@ check-tools:
 	  || echo "  git hook                     absent -- run: make hooks"; \
 	echo; \
 	need verilator                 "simulation and lint"; \
+	if command -v verilator >/dev/null 2>&1; then \
+	  found=$$(verilator --version | awk '{print $$2}'); \
+	  printf "  %-28s " "verilator version"; \
+	  if [ "$$found" = "$(VERILATOR_VERSION)" ]; then \
+	    echo "OK ($$found)"; \
+	  else \
+	    echo "MISMATCH -- expected $(VERILATOR_VERSION), found $$found"; \
+	    ok=0; \
+	  fi; \
+	fi; \
 	opt verible-verilog-lint       "style lint"; \
 	opt verible-verilog-format     "formatting"; \
 	if command -v verible-verilog-lint >/dev/null 2>&1; then \
