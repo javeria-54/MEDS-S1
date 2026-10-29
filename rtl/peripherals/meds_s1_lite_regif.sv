@@ -34,27 +34,27 @@
 module meds_s1_lite_regif
   import meds_s1_lite_pkg::*;
 #(
-  // Window size in address bits: 64 KiB -> 16, 4 MiB -> 22.  Comes from the
-  // region's `size` in configs/*.yaml; never hand-written in two places.
-  parameter int unsigned ADDR_W = 16,
-  // Register-file width.  Must be LITE_DW (64) or LITE_DW/2 (32).
-  parameter int unsigned REG_DW = 32
+    // Window size in address bits: 64 KiB -> 16, 4 MiB -> 22.  Comes from the
+    // region's `size` in configs/*.yaml; never hand-written in two places.
+    parameter int unsigned ADDR_W = 16,
+    // Register-file width.  Must be LITE_DW (64) or LITE_DW/2 (32).
+    parameter int unsigned REG_DW = 32
 ) (
-  input  logic                clk_i,
-  input  logic                rst_ni,
+    input logic clk_i,
+    input logic rst_ni,
 
-  // ---- I4 bus port.  FROZEN.  Do not add signals here. ----------------------
-  input  lite_req_t           lite_req_i,
-  output lite_rsp_t           lite_rsp_o,
+    // ---- I4 bus port.  FROZEN.  Do not add signals here. ----------------------
+    input  lite_req_t lite_req_i,
+    output lite_rsp_t lite_rsp_o,
 
-  // ---- register-file port.  FROZEN.  This is the side a peripheral sees. ----
-  output logic [ADDR_W-1:0]   addr_o,
-  output logic                we_o,
-  output logic                re_o,
-  output logic [REG_DW-1:0]   wdata_o,
-  output logic [REG_DW/8-1:0] wstrb_o,
-  input  logic [REG_DW-1:0]   rdata_i,
-  input  logic                err_i
+    // ---- register-file port.  FROZEN.  This is the side a peripheral sees. ----
+    output logic [  ADDR_W-1:0] addr_o,
+    output logic                we_o,
+    output logic                re_o,
+    output logic [  REG_DW-1:0] wdata_o,
+    output logic [REG_DW/8-1:0] wstrb_o,
+    input  logic [  REG_DW-1:0] rdata_i,
+    input  logic                err_i
 );
 
   // ===========================================================================

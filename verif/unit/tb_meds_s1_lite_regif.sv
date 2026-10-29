@@ -47,43 +47,41 @@ module tb_meds_s1_lite_regif
     forever #5 clk = ~clk;
   end
 
-  int unsigned checks = 0;
-  int unsigned errors = 0;
+  int unsigned              checks = 0;
+  int unsigned              errors = 0;
 
   // ---------------------------------------------------------------------------
   // DUT
   // ---------------------------------------------------------------------------
-  lite_req_t           req;
-  lite_rsp_t           rsp;
-  logic [ADDR_W-1:0]   addr;
-  logic                we, re, err;
-  logic [REG_DW-1:0]   wdata, rdata;
+  lite_req_t                req;
+  lite_rsp_t                rsp;
+  logic        [ADDR_W-1:0] addr;
+  logic we, re, err;
+  logic [REG_DW-1:0] wdata, rdata;
   logic [REG_DW/8-1:0] wstrb;
 
   meds_s1_lite_regif #(
-    .ADDR_W (ADDR_W),
-    .REG_DW (REG_DW)
+      .ADDR_W(ADDR_W),
+      .REG_DW(REG_DW)
   ) dut (
-    .clk_i      (clk),
-    .rst_ni     (rst_n),
-    .lite_req_i (req),
-    .lite_rsp_o (rsp),
-    .addr_o     (addr),
-    .we_o       (we),
-    .re_o       (re),
-    .wdata_o    (wdata),
-    .wstrb_o    (wstrb),
-    .rdata_i    (rdata),
-    .err_i      (err)
+      .clk_i     (clk),
+      .rst_ni    (rst_n),
+      .lite_req_i(req),
+      .lite_rsp_o(rsp),
+      .addr_o    (addr),
+      .we_o      (we),
+      .re_o      (re),
+      .wdata_o   (wdata),
+      .wstrb_o   (wstrb),
+      .rdata_i   (rdata),
+      .err_i     (err)
   );
 
   // ---------------------------------------------------------------------------
   // Check helpers.  Keep these -- the "=== PASS : n checks ===" contract and a
   // non-zero exit are what the runner keys on.
   // ---------------------------------------------------------------------------
-  task automatic check(input string name,
-                       input logic [63:0] got,
-                       input logic [63:0] exp);
+  task automatic check(input string name, input logic [63:0] got, input logic [63:0] exp);
     checks++;
     if (got !== exp) begin
       errors++;
@@ -184,10 +182,10 @@ module tb_meds_s1_lite_regif
 
     // Reset state.  These four pass against the skeleton DUT and are here so
     // the file runs end to end from day one -- four checks is not a suite.
-    check1("b_valid low in reset", rsp.b_valid,  1'b0);
-    check1("r_valid low in reset", rsp.r_valid,  1'b0);
-    check1("we low in reset",      we,           1'b0);
-    check1("re low in reset",      re,           1'b0);
+    check1("b_valid low in reset", rsp.b_valid, 1'b0);
+    check1("r_valid low in reset", rsp.r_valid, 1'b0);
+    check1("we low in reset", we, 1'b0);
+    check1("re low in reset", re, 1'b0);
 
     rst_n = 1'b1;
     repeat (2) @(negedge clk);
